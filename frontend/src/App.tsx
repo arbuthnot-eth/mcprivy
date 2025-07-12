@@ -5,7 +5,6 @@ function App() {
   const { ready, authenticated, login, logout, getAccessToken } = usePrivy();
   const { wallets } = useWallets();
   const [ws, setWs] = useState<WebSocket | null>(null);
-  const [message, setMessage] = useState('');
   const [response, setResponse] = useState('');
 
   if (!ready) return <div>Loading...</div>;
