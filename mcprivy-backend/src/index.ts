@@ -1,15 +1,16 @@
 import { PrivyClient } from '@privy-io/server-auth';
-import { generateAuthorizationSignature } from '@privy-io/server-auth/wallet-api';
 
 interface Env {
   PRIVY_APP_ID: string;
   PRIVY_APP_SECRET: string;
   PRIVY_AUTHORIZATION_KEY: string;
+  AUTH_ID: string;
+  AUTH_PUBLIC_KEY: string;
+  QUORUM_ID: string;
 }
 
 interface WebSocketState {
   walletId: string;
-  authorizationKey: string;
 }
 
 const wsState = new Map<WebSocket, WebSocketState>();
@@ -25,6 +26,23 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+}
+
+// Helper function to check if a wallet has session keys available
+
+
+// Helper function to initialize Privy client
+function initPrivyClient(env: Env): PrivyClient {
+  // Strip the 'wallet-auth:' prefix if present
+  const authorizationKey = env.PRIVY_AUTHORIZATION_KEY.startsWith('wallet-auth:') 
+    ? env.PRIVY_AUTHORIZATION_KEY.replace('wallet-auth:', '')
+    : env.PRIVY_AUTHORIZATION_KEY;
+    
+  return new PrivyClient(env.PRIVY_APP_ID, env.PRIVY_APP_SECRET, {
+    walletApi: {
+      authorizationPrivateKey: authorizationKey
+    }
+  });
 }
 
 export default {
@@ -82,43 +100,64 @@ export default {
             jsonrpc: '2.0'
           }));
 
-          // Use authorization key from environment
-          console.log('Using authorization key from environment...');
-          const authorizationKey = env.PRIVY_AUTHORIZATION_KEY;
-          
-          if (!authorizationKey) {
-            throw new Error('PRIVY_AUTHORIZATION_KEY not found in environment');
-          }
-          
-          console.log('Authorization key configured:', authorizationKey.substring(0, 20) + '...');
+          // Privy SDK handles authorization automatically via client configuration
+          console.log('Privy SDK configured for automatic authorization');
 
-          // Check if user already has wallets
-          console.log('Checking for existing wallets...');
-          const userWalletsRes = await fetch(`https://api.privy.io/v1/users/${verificationResult.userId}/wallets`, {
+          // Check if user already has wallets by fetching user data
+          console.log('Checking for existing wallets for user:', verificationResult.userId);
+          
+          // URL encode the user ID to handle special characters properly
+          const encodedUserId = encodeURIComponent(verificationResult.userId);
+          console.log('Using encoded user ID for API call:', encodedUserId);
+          
+          const userDataRes = await fetch(`https://auth.privy.io/api/v1/users/${encodedUserId}`, {
             method: 'GET',
             headers: {
               'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
               'privy-app-id': env.PRIVY_APP_ID,
             },
           });
+          
+          console.log('User data API response status:', userDataRes.status);
+          console.log('User data API response ok:', userDataRes.ok);
 
           let walletId = 'temp-wallet-id';
           let walletAddress = 'temp-address';
 
-          if (userWalletsRes.ok) {
-            const walletsData = await userWalletsRes.json() as { wallets: Array<{ id: string; address: string; chain_type: string }> };
+          if (userDataRes.ok) {
+            const userData = await userDataRes.json() as { 
+              id: string; 
+              linked_accounts: Array<{ 
+                type: string; 
+                address?: string; 
+                chain_type?: string; 
+                id?: string; 
+              }> 
+            };
+            
+            console.log('User data response:', JSON.stringify(userData, null, 2));
+            console.log('Total linked accounts found:', userData.linked_accounts?.length || 0);
+            console.log('Linked accounts data:', JSON.stringify(userData.linked_accounts, null, 2));
             
             // Find existing Ethereum wallet
-            const existingWallet = walletsData.wallets.find(w => w.chain_type === 'ethereum');
+            const existingWallet = userData.linked_accounts.find(account => 
+              account.type === 'wallet' && account.chain_type === 'ethereum'
+            );
+            console.log('Existing Ethereum wallet found:', existingWallet ? JSON.stringify(existingWallet, null, 2) : 'None');
             
-            if (existingWallet) {
+            if (existingWallet && existingWallet.id && existingWallet.address) {
               walletId = existingWallet.id;
               walletAddress = existingWallet.address;
               console.log('Using existing wallet:', walletId, 'Address:', walletAddress);
               
               serverWs.send(JSON.stringify({
                 id: 'wallet_found',
-                result: { walletId, address: walletAddress, isNew: false },
+                result: { 
+                  walletId, 
+                  address: walletAddress, 
+                  isNew: false,
+                  message: 'Connected to existing wallet. Make sure session signer is added on the frontend.'
+                },
                 jsonrpc: '2.0'
               }));
             } else {
@@ -138,26 +177,34 @@ export default {
                 }),
                 });
 
-                if (createWalletRes.ok) {
-                  const walletData = await createWalletRes.json() as { id: string; address: string };
-                  walletId = walletData.id;
-                  walletAddress = walletData.address;
-                  console.log('New wallet created successfully:', walletId, 'Address:', walletAddress);
+                              if (createWalletRes.ok) {
+                const walletData = await createWalletRes.json() as { id: string; address: string };
+                walletId = walletData.id;
+                walletAddress = walletData.address;
+                console.log('New wallet created successfully:', walletId, 'Address:', walletAddress);
 
-                  serverWs.send(JSON.stringify({
-                    id: 'wallet_created',
-                    result: { walletId, address: walletAddress, isNew: true },
-                    jsonrpc: '2.0'
-                  }));
-                } else {
-                  const errorText = await createWalletRes.text();
-                  console.error('Wallet creation failed:', createWalletRes.status, errorText);
-                  serverWs.send(JSON.stringify({
-                    id: 'error',
-                    error: `Wallet creation failed: ${errorText}`,
-                    jsonrpc: '2.0'
-                  }));
-                }
+                // With proper SDK usage, we don't need to manually check session keys
+                console.log('Wallet ready for signing with SDK');
+
+                serverWs.send(JSON.stringify({
+                  id: 'wallet_created',
+                  result: { 
+                    walletId, 
+                    address: walletAddress, 
+                    isNew: true,
+                    message: 'New wallet created. Session signer will be added automatically.'
+                  },
+                  jsonrpc: '2.0'
+                }));
+              } else {
+                const errorText = await createWalletRes.text();
+                console.error('Wallet creation failed:', createWalletRes.status, errorText);
+                serverWs.send(JSON.stringify({
+                  id: 'error',
+                  error: `Wallet creation failed: ${errorText}`,
+                  jsonrpc: '2.0'
+                }));
+              }
               } catch (error) {
                 console.error('Wallet creation error:', error);
                 serverWs.send(JSON.stringify({
@@ -168,7 +215,14 @@ export default {
               }
             }
           } else {
-            console.error('Failed to fetch user wallets:', userWalletsRes.status);
+            const errorText = await userDataRes.text();
+            console.error('Failed to fetch user data:', userDataRes.status);
+            console.error('Error response:', errorText);
+            console.error('Request URL was:', `https://auth.privy.io/api/v1/users/${encodedUserId}`);
+            console.error('Request headers:', JSON.stringify({
+              'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
+              'privy-app-id': env.PRIVY_APP_ID,
+            }));
             // Fallback to creating new wallet
             try {
               const createWalletRes = await fetch('https://api.privy.io/v1/wallets', {
@@ -192,7 +246,12 @@ export default {
 
                 serverWs.send(JSON.stringify({
                   id: 'wallet_created',
-                  result: { walletId, address: walletAddress, isNew: true },
+                  result: { 
+                    walletId, 
+                    address: walletAddress, 
+                    isNew: true,
+                    message: 'Fallback wallet created. Session signer will be added automatically.'
+                  },
                   jsonrpc: '2.0'
                 }));
               } else {
@@ -215,7 +274,7 @@ export default {
           }
 
           // Store wallet state
-          wsState.set(serverWs, { walletId, authorizationKey });
+          wsState.set(serverWs, { walletId });
 
         } catch (error) {
           console.error('Authentication error:', error);
@@ -243,65 +302,36 @@ export default {
             return;
           }
           
-          const { walletId, authorizationKey } = state;
+          const { walletId } = state;
           
           if (msg.method === 'signPersonalMessage') {
             const message = msg.params[0];
             console.log('Signing message:', message);
 
-            const body = {
-              method: 'personal_sign',
-              params: {
-                message,
-                encoding: 'hex',
-              },
-            };
-
-            const input = {
-              method: 'POST' as const,
-              url: `/v1/wallets/${walletId}/rpc`,
-              headers: {
-                'privy-app-id': env.PRIVY_APP_ID,
-              },
-              body,
-              version: 1 as const,
-            };
-
-            const signature = generateAuthorizationSignature({
-              input,
-              authorizationPrivateKey: authorizationKey,
-            });
-
-            const signRes = await fetch(`https://api.privy.io/v1/wallets/${walletId}/rpc`, {
-              method: 'POST',
-              headers: {
-                'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
-                'privy-app-id': env.PRIVY_APP_ID,
-                'Content-Type': 'application/json',
-                'privy-authorization-signature': signature || '',
-              },
-              body: JSON.stringify(body),
-            });
-            
-            if (!signRes.ok) {
-              const errorText = await signRes.text();
-              console.error('Sign request failed:', signRes.status, errorText);
+            try {
+              // Use the Privy SDK's built-in signMessage method
+              const privy = initPrivyClient(env);
+              const { signature } = await privy.walletApi.ethereum.signMessage({
+                walletId: walletId,
+                message: message
+              });
+              
+              console.log('Message signed successfully with SDK');
+              
+              serverWs.send(JSON.stringify({
+                id: msg.id,
+                result: signature,
+                jsonrpc: '2.0'
+              }));
+            } catch (error) {
+              console.error('Sign request failed:', error);
+              
               serverWs.send(JSON.stringify({ 
                 id: msg.id, 
-                error: `Sign failed (${signRes.status}): ${errorText}`, 
+                error: `Sign failed: ${error instanceof Error ? error.message : String(error)}`, 
                 jsonrpc: '2.0' 
               }));
-              return;
             }
-            
-            const signData = await signRes.json() as { data: { signature: string } };
-            console.log('Sign successful! Signature:', signData.data.signature);
-
-            serverWs.send(JSON.stringify({ 
-              id: msg.id, 
-              result: signData.data.signature, 
-              jsonrpc: '2.0' 
-            }));
           } else {
             console.log('Unknown method:', msg.method);
             serverWs.send(JSON.stringify({ 
@@ -338,10 +368,14 @@ export default {
       return new Response(JSON.stringify({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        env: {
-          PRIVY_APP_ID: !!env.PRIVY_APP_ID,
-          PRIVY_APP_SECRET: !!env.PRIVY_APP_SECRET,
-        }
+                  env: {
+            PRIVY_APP_ID: !!env.PRIVY_APP_ID,
+            PRIVY_APP_SECRET: !!env.PRIVY_APP_SECRET,
+            PRIVY_AUTHORIZATION_KEY: !!env.PRIVY_AUTHORIZATION_KEY,
+            AUTH_ID: !!env.AUTH_ID,
+            AUTH_PUBLIC_KEY: !!env.AUTH_PUBLIC_KEY,
+            QUORUM_ID: !!env.QUORUM_ID,
+          }
       }), {
         headers: { 'Content-Type': 'application/json' }
       });
