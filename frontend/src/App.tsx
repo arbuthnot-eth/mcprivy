@@ -8,16 +8,16 @@ function App() {
   const [response, setResponse] = useState('');
   const [token, setToken] = useState('');
 
-  if (!ready) return <div>Loading...</div>;
-
-  const embeddedWallet = wallets.find((wallet) => wallet.walletClientType === 'privy');
-
   // Get token when authenticated
   useEffect(() => {
     if (authenticated) {
       getAccessToken().then(t => t && setToken(t));
     }
   }, [authenticated, getAccessToken]);
+
+  if (!ready) return <div>Loading...</div>;
+
+  const embeddedWallet = wallets.find((wallet) => wallet.walletClientType === 'privy');
 
   const connectToMCP = async () => {
     const token = await getAccessToken();
