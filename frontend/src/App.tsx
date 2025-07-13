@@ -1,15 +1,23 @@
 import { usePrivy, useWallets } from '@privy-io/react-auth';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 function App() {
   const { ready, authenticated, login, logout, getAccessToken } = usePrivy();
   const { wallets } = useWallets();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [response, setResponse] = useState('');
+  const [token, setToken] = useState('');
 
   if (!ready) return <div>Loading...</div>;
 
   const embeddedWallet = wallets.find((wallet) => wallet.walletClientType === 'privy');
+
+  // Get token when authenticated
+  useEffect(() => {
+    if (authenticated) {
+      getAccessToken().then(t => t && setToken(t));
+    }
+  }, [authenticated, getAccessToken]);
 
   const connectToMCP = async () => {
     const token = await getAccessToken();
@@ -45,6 +53,7 @@ function App() {
         <div>
           <button onClick={logout}>Logout</button>
           <p>Embedded Wallet Address: {embeddedWallet?.address || 'No wallet provisioned'}</p>
+          <p>Token: {token}</p>
           <button onClick={connectToMCP}>Connect to MCP Server</button>
           <br />
           <button onClick={sendSignRequest}>Send signPersonalMessage Request</button>
