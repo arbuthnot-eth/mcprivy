@@ -4,32 +4,18 @@ import { generateAuthorizationSignature } from '@privy-io/server-auth/wallet-api
 interface Env {
   PRIVY_APP_ID: string;
   PRIVY_APP_SECRET: string;
+  PRIVY_AUTHORIZATION_KEY: string;
 }
 
 interface WebSocketState {
   walletId: string;
-  privateKeyHex: string;
+  authorizationKey: string;
 }
 
 const wsState = new Map<WebSocket, WebSocketState>();
 
 // Helper function to convert base64url to hex (Cloudflare Workers compatible)
-function base64ToHex(base64url: string): string {
-  // Convert URL-safe base64 to regular base64
-  let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
-  // Add padding if needed
-  while (base64.length % 4) {
-    base64 += '=';
-  }
-  
-  const binary = atob(base64);
-  let hex = '';
-  for (let i = 0; i < binary.length; i++) {
-    const byte = binary.charCodeAt(i);
-    hex += byte.toString(16).padStart(2, '0');
-  }
-  return hex;
-}
+// Removed base64ToHex function - no longer needed with SPKI format
 
 // Helper function to convert ArrayBuffer to base64
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -45,229 +31,344 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
     
+    // Log all incoming requests for debugging
+    console.log('=== INCOMING REQUEST ===');
+    console.log('Method:', request.method);
+    console.log('URL:', request.url);
+    console.log('Pathname:', url.pathname);
+    console.log('Upgrade header:', request.headers.get('Upgrade'));
+    console.log('=======================');
+    
     // Handle WebSocket connections at /ws route
-    if (url.pathname === '/ws') {
-      try {
-        const upgradeHeader = request.headers.get('Upgrade');
-        if (upgradeHeader !== 'websocket') {
-          return new Response('Expected websocket', { status: 400 });
-        }
+    if (url.pathname === '/ws' || url.pathname === '/ws/') {
+      console.log('WebSocket route accessed');
+      
+      // Check for WebSocket upgrade immediately
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader?.toLowerCase() !== 'websocket') {
+        console.log('Invalid upgrade header:', upgradeHeader);
+        return new Response('Expected websocket', { status: 400 });
+      }
 
-        const token = url.searchParams.get('token');
-        if (!token) {
-          return new Response('Token required', { status: 401 });
-        }
+      const token = url.searchParams.get('token');
+      if (!token) {
+        console.log('No token provided');
+        return new Response('Token required', { status: 401 });
+      }
 
-        console.log('Received token, verifying...');
-        
-        // Verify Privy token
-        const client = new PrivyClient(env.PRIVY_APP_ID, env.PRIVY_APP_SECRET);
-        
-        let verificationResult;
+      // Create WebSocket pair and return immediately
+      const pair = new WebSocketPair();
+      const clientWs = pair[0];
+      const serverWs = pair[1];
+
+      serverWs.accept();
+      console.log('WebSocket connection established!');
+
+      // Handle authentication and setup asynchronously
+      (async () => {
         try {
-          verificationResult = await client.verifyAuthToken(token);
+          console.log('Starting async authentication...');
+          
+          // Verify Privy token
+          const client = new PrivyClient(env.PRIVY_APP_ID, env.PRIVY_APP_SECRET);
+          const verificationResult = await client.verifyAuthToken(token);
           console.log('Token verification successful for user:', verificationResult.userId);
-        } catch (error) {
-          console.error('Token verification error:', error);
-          return new Response('Invalid token', { status: 401 });
-        }
+          
+          // Send welcome message
+          serverWs.send(JSON.stringify({
+            id: 'welcome',
+            message: 'Connected to MCPrivy server! Authentication successful.',
+            user: verificationResult.userId,
+            jsonrpc: '2.0'
+          }));
 
-        console.log('Creating WebSocket pair...');
-        const pair = new WebSocketPair();
-        const clientWs = pair[0];
-        const serverWs = pair[1];
+          // Use authorization key from environment
+          console.log('Using authorization key from environment...');
+          const authorizationKey = env.PRIVY_AUTHORIZATION_KEY;
+          
+          if (!authorizationKey) {
+            throw new Error('PRIVY_AUTHORIZATION_KEY not found in environment');
+          }
+          
+          console.log('Authorization key configured:', authorizationKey.substring(0, 20) + '...');
 
-        serverWs.accept();
-        console.log('WebSocket connection established!');
-        
-        // Send a welcome message
-        serverWs.send(JSON.stringify({
-          id: 'welcome',
-          message: 'Connected to MCPrivy server! Full functionality enabled.',
-          user: verificationResult.userId,
-          jsonrpc: '2.0'
-        }));
-
-        console.log('Generating session signer...');
-        // Generate session signer on connect
-        const keyPair = await crypto.subtle.generateKey(
-          { name: 'ECDSA', namedCurve: 'P-256' },
-          true,
-          ['sign', 'verify']
-        ) as CryptoKeyPair;
-
-        const privateJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey) as JsonWebKey;
-        const privateKeyHex = base64ToHex(privateJwk.d!);
-        const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey) as JsonWebKey;
-        const xHex = base64ToHex(publicJwk.x!).padStart(64, '0');
-        const yHex = base64ToHex(publicJwk.y!).padStart(64, '0');
-        const publicKeyHex = '04' + xHex + yHex;
-
-        console.log('Creating wallet with session signer...');
-        // Create wallet with this session signer as owner
-        let createWalletRes;
-        try {
-          createWalletRes = await fetch('https://api.privy.io/v1/wallets', {
-            method: 'POST',
+          // Check if user already has wallets
+          console.log('Checking for existing wallets...');
+          const userWalletsRes = await fetch(`https://api.privy.io/v1/users/${verificationResult.userId}/wallets`, {
+            method: 'GET',
             headers: {
               'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
               'privy-app-id': env.PRIVY_APP_ID,
-              'Content-Type': 'application/json',
             },
-            body: JSON.stringify({
-              chain_type: 'ethereum',
-              owner: { public_key: publicKeyHex },
-            }),
           });
-        } catch (fetchError) {
-          console.error('Wallet creation fetch error:', fetchError);
-          serverWs.send(JSON.stringify({
-            id: 'error',
-            error: `Wallet creation fetch failed: ${fetchError}`,
-            jsonrpc: '2.0'
-          }));
-          // Don't return error, continue with WebSocket
-        }
 
-        if (createWalletRes && !createWalletRes.ok) {
-          const errorText = await createWalletRes.text();
-          console.error('Wallet creation failed:', createWalletRes.status, errorText);
-          serverWs.send(JSON.stringify({
-            id: 'error',
-            error: `Wallet creation failed: ${errorText}`,
-            jsonrpc: '2.0'
-          }));
-          // Don't return error, continue with WebSocket
-        }
+          let walletId = 'temp-wallet-id';
+          let walletAddress = 'temp-address';
 
-        let walletId = 'temp-wallet-id';
-        let walletAddress = 'temp-address';
-        
-        if (createWalletRes && createWalletRes.ok) {
-          try {
-            const walletData = await createWalletRes.json() as { id: string; address: string };
-            walletId = walletData.id;
-            walletAddress = walletData.address;
-            console.log('Wallet created successfully:', walletId, 'Address:', walletAddress);
-
-            // Send wallet info to client
-            serverWs.send(JSON.stringify({
-              id: 'wallet_created',
-              result: { 
-                walletId,
-                address: walletAddress
-              },
-              jsonrpc: '2.0'
-            }));
-          } catch (parseError) {
-            console.error('Error parsing wallet response:', parseError);
-            serverWs.send(JSON.stringify({
-              id: 'error',
-              error: `Error parsing wallet response: ${parseError}`,
-              jsonrpc: '2.0'
-            }));
-          }
-        }
-
-        wsState.set(serverWs, { walletId, privateKeyHex });
-
-        serverWs.addEventListener('message', async (event) => {
-          try {
-            const msg = JSON.parse(event.data as string);
-            console.log('Received message:', msg.method, 'with ID:', msg.id);
+          if (userWalletsRes.ok) {
+            const walletsData = await userWalletsRes.json() as { wallets: Array<{ id: string; address: string; chain_type: string }> };
             
-            if (msg.method === 'signPersonalMessage') {
-              const message = msg.params[0]; // Assume hex message
-              console.log('Signing message:', message);
+            // Find existing Ethereum wallet
+            const existingWallet = walletsData.wallets.find(w => w.chain_type === 'ethereum');
+            
+            if (existingWallet) {
+              walletId = existingWallet.id;
+              walletAddress = existingWallet.address;
+              console.log('Using existing wallet:', walletId, 'Address:', walletAddress);
+              
+              serverWs.send(JSON.stringify({
+                id: 'wallet_found',
+                result: { walletId, address: walletAddress, isNew: false },
+                jsonrpc: '2.0'
+              }));
+            } else {
+              // No existing wallet, create a new one
+              console.log('No existing Ethereum wallet found, creating new wallet...');
+              try {
+                const createWalletRes = await fetch('https://api.privy.io/v1/wallets', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
+                    'privy-app-id': env.PRIVY_APP_ID,
+                    'Content-Type': 'application/json',
+                  },
+                                  body: JSON.stringify({
+                  chain_type: 'ethereum',
+                  owner: { user_id: verificationResult.userId },
+                }),
+                });
 
-              const body = {
-                method: 'personal_sign',
-                params: {
-                  message,
-                  encoding: 'hex',
-                },
-              };
+                if (createWalletRes.ok) {
+                  const walletData = await createWalletRes.json() as { id: string; address: string };
+                  walletId = walletData.id;
+                  walletAddress = walletData.address;
+                  console.log('New wallet created successfully:', walletId, 'Address:', walletAddress);
 
-              const input = {
-                method: 'POST' as const,
-                url: `/v1/wallets/${walletId}/rpc`,
-                headers: {
-                  'privy-app-id': env.PRIVY_APP_ID,
-                },
-                body,
-                version: 1 as const,
-              };
-
-              const signature = generateAuthorizationSignature({
-                input,
-                authorizationPrivateKey: privateKeyHex,
-              });
-
-              const signRes = await fetch(`https://api.privy.io/v1/wallets/${walletId}/rpc`, {
+                  serverWs.send(JSON.stringify({
+                    id: 'wallet_created',
+                    result: { walletId, address: walletAddress, isNew: true },
+                    jsonrpc: '2.0'
+                  }));
+                } else {
+                  const errorText = await createWalletRes.text();
+                  console.error('Wallet creation failed:', createWalletRes.status, errorText);
+                  serverWs.send(JSON.stringify({
+                    id: 'error',
+                    error: `Wallet creation failed: ${errorText}`,
+                    jsonrpc: '2.0'
+                  }));
+                }
+              } catch (error) {
+                console.error('Wallet creation error:', error);
+                serverWs.send(JSON.stringify({
+                  id: 'error',
+                  error: `Wallet creation error: ${error}`,
+                  jsonrpc: '2.0'
+                }));
+              }
+            }
+          } else {
+            console.error('Failed to fetch user wallets:', userWalletsRes.status);
+            // Fallback to creating new wallet
+            try {
+              const createWalletRes = await fetch('https://api.privy.io/v1/wallets', {
                 method: 'POST',
                 headers: {
                   'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
                   'privy-app-id': env.PRIVY_APP_ID,
                   'Content-Type': 'application/json',
-                  'privy-authorization-signature': signature || '',
                 },
-                body: JSON.stringify(body),
+                body: JSON.stringify({
+                  chain_type: 'ethereum',
+                  owner: { user_id: verificationResult.userId },
+                }),
               });
-              
-              if (!signRes.ok) {
-                const errorText = await signRes.text();
-                console.error('Sign request failed:', signRes.status, errorText);
-                serverWs.send(JSON.stringify({ 
-                  id: msg.id, 
-                  error: `Sign failed (${signRes.status}): ${errorText}`, 
-                  jsonrpc: '2.0' 
-                }));
-                return;
-              }
-              
-              const signData = await signRes.json() as { data: { signature: string } };
-              console.log('Sign successful! Signature:', signData.data.signature);
 
-              serverWs.send(JSON.stringify({ 
-                id: msg.id, 
-                result: signData.data.signature, 
-                jsonrpc: '2.0' 
-              }));
-            } else {
-              console.log('Unknown method:', msg.method);
-              serverWs.send(JSON.stringify({ 
-                id: msg.id, 
-                error: `Unknown method: ${msg.method}`, 
-                jsonrpc: '2.0' 
+              if (createWalletRes.ok) {
+                const walletData = await createWalletRes.json() as { id: string; address: string };
+                walletId = walletData.id;
+                walletAddress = walletData.address;
+                console.log('Fallback wallet created successfully:', walletId, 'Address:', walletAddress);
+
+                serverWs.send(JSON.stringify({
+                  id: 'wallet_created',
+                  result: { walletId, address: walletAddress, isNew: true },
+                  jsonrpc: '2.0'
+                }));
+              } else {
+                const errorText = await createWalletRes.text();
+                console.error('Fallback wallet creation failed:', createWalletRes.status, errorText);
+                serverWs.send(JSON.stringify({
+                  id: 'error',
+                  error: `Wallet creation failed: ${errorText}`,
+                  jsonrpc: '2.0'
+                }));
+              }
+            } catch (error) {
+              console.error('Fallback wallet creation error:', error);
+              serverWs.send(JSON.stringify({
+                id: 'error',
+                error: `Wallet creation error: ${error}`,
+                jsonrpc: '2.0'
               }));
             }
-          } catch (error) {
-            console.error('Message handling error:', error);
+          }
+
+          // Store wallet state
+          wsState.set(serverWs, { walletId, authorizationKey });
+
+        } catch (error) {
+          console.error('Authentication error:', error);
+          serverWs.send(JSON.stringify({
+            id: 'error',
+            error: `Authentication failed: ${error}`,
+            jsonrpc: '2.0'
+          }));
+        }
+      })();
+
+      // Message handler
+      serverWs.addEventListener('message', async (event: MessageEvent) => {
+        try {
+          const msg = JSON.parse(event.data as string);
+          console.log('Received message:', msg.method, 'with ID:', msg.id);
+          
+          const state = wsState.get(serverWs);
+          if (!state) {
+            serverWs.send(JSON.stringify({
+              id: msg.id,
+              error: 'WebSocket not properly initialized',
+              jsonrpc: '2.0'
+            }));
+            return;
+          }
+          
+          const { walletId, authorizationKey } = state;
+          
+          if (msg.method === 'signPersonalMessage') {
+            const message = msg.params[0];
+            console.log('Signing message:', message);
+
+            const body = {
+              method: 'personal_sign',
+              params: {
+                message,
+                encoding: 'hex',
+              },
+            };
+
+            const input = {
+              method: 'POST' as const,
+              url: `/v1/wallets/${walletId}/rpc`,
+              headers: {
+                'privy-app-id': env.PRIVY_APP_ID,
+              },
+              body,
+              version: 1 as const,
+            };
+
+            const signature = generateAuthorizationSignature({
+              input,
+              authorizationPrivateKey: authorizationKey,
+            });
+
+            const signRes = await fetch(`https://api.privy.io/v1/wallets/${walletId}/rpc`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
+                'privy-app-id': env.PRIVY_APP_ID,
+                'Content-Type': 'application/json',
+                'privy-authorization-signature': signature || '',
+              },
+              body: JSON.stringify(body),
+            });
+            
+            if (!signRes.ok) {
+              const errorText = await signRes.text();
+              console.error('Sign request failed:', signRes.status, errorText);
+              serverWs.send(JSON.stringify({ 
+                id: msg.id, 
+                error: `Sign failed (${signRes.status}): ${errorText}`, 
+                jsonrpc: '2.0' 
+              }));
+              return;
+            }
+            
+            const signData = await signRes.json() as { data: { signature: string } };
+            console.log('Sign successful! Signature:', signData.data.signature);
+
             serverWs.send(JSON.stringify({ 
-              id: 1, 
-              error: `Internal server error: ${error}`, 
+              id: msg.id, 
+              result: signData.data.signature, 
+              jsonrpc: '2.0' 
+            }));
+          } else {
+            console.log('Unknown method:', msg.method);
+            serverWs.send(JSON.stringify({ 
+              id: msg.id, 
+              error: `Unknown method: ${msg.method}`, 
               jsonrpc: '2.0' 
             }));
           }
-        });
+        } catch (error) {
+          console.error('Message handling error:', error);
+          serverWs.send(JSON.stringify({ 
+            id: 1, 
+            error: `Internal server error: ${error}`, 
+            jsonrpc: '2.0' 
+          }));
+        }
+      });
 
-        serverWs.addEventListener('close', () => {
-          console.log('WebSocket connection closed for wallet:', walletId);
-          wsState.delete(serverWs);
-        });
+      serverWs.addEventListener('close', () => {
+        console.log('WebSocket connection closed');
+        wsState.delete(serverWs);
+      });
 
-        serverWs.addEventListener('error', (error) => {
-          console.error('WebSocket error:', error);
-        });
+      serverWs.addEventListener('error', (error: Event) => {
+        console.error('WebSocket error:', error);
+      });
 
-        return new Response(null, { status: 101, webSocket: clientWs });
-      } catch (error) {
-        console.error('WebSocket setup error:', error);
-        return new Response(`Internal server error: ${error}`, { status: 500 });
-      }
+      // Return the WebSocket response immediately
+      return new Response(null, { status: 101, webSocket: clientWs });
     }
 
-    // Handle other routes - let the static assets be served
+    // Handle health check
+    if (url.pathname === '/health') {
+      return new Response(JSON.stringify({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        env: {
+          PRIVY_APP_ID: !!env.PRIVY_APP_ID,
+          PRIVY_APP_SECRET: !!env.PRIVY_APP_SECRET,
+        }
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Handle root route
+    if (url.pathname === '/' || url.pathname === '') {
+      return new Response(`
+        <!DOCTYPE html>
+        <html>
+          <head><title>MCPrivy Backend</title></head>
+          <body>
+            <h1>MCPrivy Backend Server</h1>
+            <p>WebSocket endpoint: <code>/ws</code></p>
+            <p>Health check: <code>/health</code></p>
+            <p>Current path: <code>${url.pathname}</code></p>
+          </body>
+        </html>
+      `, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+
+    // Log unhandled routes for debugging
+    console.log('Unhandled route:', url.pathname, 'Method:', request.method);
+
+    // Handle other routes
     return new Response('Not found', { status: 404 });
   },
 };
