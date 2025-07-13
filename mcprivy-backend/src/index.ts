@@ -38,6 +38,10 @@ function initPrivyClient(env: Env): PrivyClient {
     ? env.PRIVY_AUTHORIZATION_KEY.replace('wallet-auth:', '')
     : env.PRIVY_AUTHORIZATION_KEY;
     
+  console.log('Authorization key configured:', authorizationKey.substring(0, 20) + '...');
+  console.log('Authorization key length:', authorizationKey.length);
+  console.log('Authorization key starts with wallet-auth:', env.PRIVY_AUTHORIZATION_KEY.startsWith('wallet-auth:'));
+  
   return new PrivyClient(env.PRIVY_APP_ID, env.PRIVY_APP_SECRET, {
     walletApi: {
       authorizationPrivateKey: authorizationKey
@@ -305,18 +309,38 @@ export default {
           const { walletId } = state;
           
           if (msg.method === 'signPersonalMessage') {
-            const message = msg.params[0];
-            console.log('Signing message:', message);
+            const hexMessage = msg.params[0];
+            console.log('Received hex message:', hexMessage);
+            console.log('Wallet ID:', walletId);
+
+            // Convert hex message to plain string
+            let message: string;
+            if (hexMessage.startsWith('0x')) {
+              // Convert hex to UTF-8 string using pure JavaScript
+              const hex = hexMessage.slice(2);
+              let result = '';
+              for (let i = 0; i < hex.length; i += 2) {
+                result += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+              }
+              message = result;
+            } else {
+              message = hexMessage;
+            }
+            console.log('Converted message:', message);
 
             try {
               // Use the Privy SDK's built-in signMessage method
               const privy = initPrivyClient(env);
+              
+              console.log('About to call privy.walletApi.ethereum.signMessage');
+              
               const { signature } = await privy.walletApi.ethereum.signMessage({
                 walletId: walletId,
-                message: message
+                message: message  // Now passing the plain string
               });
               
               console.log('Message signed successfully with SDK');
+              console.log('Signature:', signature);
               
               serverWs.send(JSON.stringify({
                 id: msg.id,
@@ -325,6 +349,7 @@ export default {
               }));
             } catch (error) {
               console.error('Sign request failed:', error);
+              console.error('Error details:', JSON.stringify(error, null, 2));
               
               serverWs.send(JSON.stringify({ 
                 id: msg.id, 
