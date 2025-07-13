@@ -21,14 +21,25 @@ function App() {
 
   const connectToMCP = async () => {
     const token = await getAccessToken();
-    const url = `wss://mcprivy-backend.imbibed.workers.dev?token=${token}`;
+    // Updated URL to use /ws route
+    const url = `wss://mcprivy-backend.imbibed.workers.dev/ws?token=${token}`;
     const socket = new WebSocket(url);
-    socket.onopen = () => console.log('WS connected');
+    socket.onopen = () => {
+      console.log('WS connected');
+      setResponse('✅ Connected to MCP Server');
+    };
     socket.onmessage = (event) => {
       setResponse(event.data);
       console.log('Received:', event.data);
     };
-    socket.onclose = () => console.log('WS closed');
+    socket.onclose = () => {
+      console.log('WS closed');
+      setResponse('❌ Connection closed');
+    };
+    socket.onerror = (error) => {
+      console.error('WS error:', error);
+      setResponse('❌ Connection error');
+    };
     setWs(socket);
   };
 

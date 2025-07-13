@@ -35,115 +35,74 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 export default {
-  async fetch(request: Request, env: Env) {
+  async fetch(request: Request, env: any) {
     const url = new URL(request.url);
-    if (url.pathname === '/') {
-      const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader !== 'websocket') {
-        return new Response('Expected websocket', { status: 400 });
-      }
-
-      const token = url.searchParams.get('token');
-      if (!token) {
-        return new Response('Token required', { status: 401 });
-      }
-
-      const client = new PrivyClient(env.PRIVY_APP_ID, env.PRIVY_APP_SECRET);
+    
+    // Handle WebSocket connections at /ws route
+    if (url.pathname === '/ws') {
       try {
-        await client.verifyAuthToken(token);
-      } catch (error) {
-        return new Response('Invalid token', { status: 401 });
-      }
-
-      const pair = new WebSocketPair();
-      const clientWs = pair[0];
-      const serverWs = pair[1];
-
-      serverWs.accept();
-
-      // Generate session signer on connect
-      const keyPair = await crypto.subtle.generateKey(
-        { name: 'ECDSA', namedCurve: 'P-256' },
-        true,
-        ['sign', 'verify']
-      ) as CryptoKeyPair;
-
-      const privateJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey) as JsonWebKey;
-      const privateKeyHex = base64ToHex(privateJwk.d!);
-      const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey) as JsonWebKey;
-      const xHex = base64ToHex(publicJwk.x!).padStart(64, '0');
-      const yHex = base64ToHex(publicJwk.y!).padStart(64, '0');
-      const publicKeyHex = '04' + xHex + yHex;
-
-      // Create wallet with this session signer as owner
-      const createWalletRes = await fetch('https://api.privy.io/v1/wallets', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
-          'privy-app-id': env.PRIVY_APP_ID,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          chain_type: 'ethereum',
-          owner: { public_key: publicKeyHex },
-        }),
-      });
-      const walletData = await createWalletRes.json() as { id: string };
-      const walletId = walletData.id;
-
-      wsState.set(serverWs, { walletId, privateKeyHex });
-
-      serverWs.addEventListener('message', async (event) => {
-        const msg = JSON.parse(event.data as string);
-        if (msg.method === 'signPersonalMessage') {
-          const message = msg.params[0]; // Assume hex message
-
-          const body = {
-            method: 'personal_sign',
-            params: {
-              message,
-              encoding: 'hex',
-            },
-          };
-
-          const input = {
-            method: 'POST' as const,
-            url: `/v1/wallets/${walletId}/rpc`,
-            headers: {
-              'privy-app-id': env.PRIVY_APP_ID,
-            },
-            body,
-            version: 1 as const,
-          };
-
-          const signature = generateAuthorizationSignature({
-            input,
-            authorizationPrivateKey: privateKeyHex,
-          });
-
-          const signRes = await fetch(`https://api.privy.io/v1/wallets/${walletId}/rpc`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Basic ${btoa(env.PRIVY_APP_ID + ':' + env.PRIVY_APP_SECRET)}`,
-              'privy-app-id': env.PRIVY_APP_ID,
-              'Content-Type': 'application/json',
-              'privy-authorization-signature': signature || '',
-            },
-            body: JSON.stringify(body),
-          });
-          const signData = await signRes.json() as { data: { signature: string } };
-
-          serverWs.send(JSON.stringify({ id: msg.id, result: signData.data.signature, jsonrpc: '2.0' }));
-        } else {
-          serverWs.send(JSON.stringify({ id: msg.id, error: 'Unknown method', jsonrpc: '2.0' }));
+        const upgradeHeader = request.headers.get('Upgrade');
+        if (upgradeHeader !== 'websocket') {
+          return new Response('Expected websocket', { status: 400 });
         }
-      });
 
-      serverWs.addEventListener('close', () => wsState.delete(serverWs));
+        const token = url.searchParams.get('token');
+        if (!token) {
+          return new Response('Token required', { status: 401 });
+        }
 
-      return new Response(null, { status: 101, webSocket: clientWs });
+        console.log('Creating WebSocket pair...');
+        const pair = new WebSocketPair();
+        const clientWs = pair[0];
+        const serverWs = pair[1];
+
+        serverWs.accept();
+        console.log('WebSocket connection established!');
+        
+        // Send a welcome message
+        serverWs.send(JSON.stringify({
+          id: 'welcome',
+          message: 'Connected to MCPrivy server! Minimal test version.',
+          jsonrpc: '2.0'
+        }));
+
+        serverWs.addEventListener('message', async (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            console.log('Received message:', msg);
+            
+            // Echo the message back
+            serverWs.send(JSON.stringify({
+              id: msg.id,
+              result: `Echo: ${JSON.stringify(msg)}`,
+              jsonrpc: '2.0'
+            }));
+          } catch (error) {
+            console.error('Message handling error:', error);
+            serverWs.send(JSON.stringify({ 
+              id: 1, 
+              error: 'Message parse error', 
+              jsonrpc: '2.0' 
+            }));
+          }
+        });
+
+        serverWs.addEventListener('close', () => {
+          console.log('WebSocket connection closed');
+        });
+
+        serverWs.addEventListener('error', (error) => {
+          console.error('WebSocket error:', error);
+        });
+
+        return new Response(null, { status: 101, webSocket: clientWs });
+      } catch (error) {
+        console.error('WebSocket setup error:', error);
+        return new Response(`Internal server error: ${error}`, { status: 500 });
+      }
     }
 
+    // Handle other routes - let the static assets be served
     return new Response('Not found', { status: 404 });
   },
 };
