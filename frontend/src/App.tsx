@@ -13,7 +13,7 @@ function App() {
 
   const connectToMCP = async () => {
     const token = await getAccessToken();
-    const url = `${import.meta.env.VITE_WORKER_WS_URL}?token=${token}`;
+    const url = `wss://mcprivy-backend.imbibed.workers.dev?token=${token}`;
     const socket = new WebSocket(url);
     socket.onopen = () => console.log('WS connected');
     socket.onmessage = (event) => {
