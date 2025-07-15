@@ -7,9 +7,9 @@
     "global_fetch_strictly_public",
     "nodejs_compat"
   ],
-//  "assets": {
-//    "directory": "./public"
-//  },
+  "assets": {
+    "directory": "./public"
+  },
   "observability": {
     "enabled": true
   }
