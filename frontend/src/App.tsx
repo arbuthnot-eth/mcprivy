@@ -90,6 +90,31 @@ function App() {
     }
   };
 
+  // Function to revoke server access (remove session signers)
+  const revokeServerAccess = async () => {
+    const { user } = usePrivy();
+    const { removeSessionSigners } = useSessionSigners();
+
+    const delegatedWallet = user?.linkedAccounts.find(
+      (account) => account.type === 'wallet' && account.delegated
+    ) as WalletWithMetadata | undefined;
+
+    if (!delegatedWallet) return;
+
+    try {
+      console.log('Revoking server access for wallet:', delegatedWallet.address);
+      setResponse(`🔄 Revoking server access for wallet: ${delegatedWallet.address}...`);
+      await removeSessionSigners({ address: delegatedWallet.address });
+      // Update the state to reflect that the wallet is no longer delegated
+      setWalletDelegated(false);
+      setSessionSignerAdded(false);
+      setResponse('✅ Server access permission revoked successfully');
+    } catch (error) {
+      console.error('Error removing session signer:', error);
+      setResponse(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   const connectToMCP = async () => {
     // First, grant server access if not already done
     if (!sessionSignerAdded && !walletDelegated) {
@@ -131,16 +156,41 @@ function App() {
     try {
       // Check if wallet is ready for signing
       console.log('Checking wallet readiness...');
-      
+
       // Try to get the wallet provider to ensure it's ready
       const provider = await activeWallet.getEthereumProvider();
       if (!provider) {
         setResponse('❌ Wallet provider not available');
         return;
       }
-      
+
+      // Check if wallet has the required session signer
+      const quorumId = import.meta.env.VITE_QUORUM_ID;
+      if (!quorumId) {
+        setResponse('❌ Quorum ID not configured');
+        return;
+      }
+
+      // For embedded wallets, check if session signer exists
+      if (activeWallet.walletClientType === 'privy') {
+        const hasRequiredSigner = user?.linkedAccounts.some(account => {
+          if (account.type === 'wallet' && account.address === activeWallet.address) {
+            // Check if the account is delegated or has the required session signer
+            setWalletDelegated(account.delegated);
+            return account.delegated;
+          }
+          return false;
+        });
+
+        if (!hasRequiredSigner) {
+          setResponse('❌ Wallet does not have the required session signer');
+          console.log('Server access permission required for this action');
+          return;
+        }
+      }
+
       console.log('Wallet provider ready, attempting to sign...');
-      
+
       // Now try to sign via WebSocket
       if (ws && ws.readyState === WebSocket.OPEN) {
         const rpcRequest = {
@@ -170,22 +220,22 @@ function App() {
           <p>Wallet Address: {activeWallet?.address || 'No wallet provisioned'}</p>
           <p>Wallet Type: {activeWallet?.walletClientType || 'Unknown'}</p>
           <p>Token: {token}</p>
-          <p>Server Access Status: {sessionSignerAdded || walletDelegated ? '✅ Granted' : '❌ Not granted'}</p>
+          <p style={{ marginBottom: '10px' }}>Server Access Status: {sessionSignerAdded || walletDelegated ? '✅ Granted' : '❌ Not granted'}</p>
 
           <div style={{ marginTop: '10px', marginBottom: '10px' }}>
             <button onClick={grantServerAccess} disabled={sessionSignerAdded || walletDelegated}>
               Grant Server Access Permission
             </button>
-            <button onClick={connectToMCP} style={{ marginLeft: '10px' }}>
-              Connect to MCP Server
-            </button>
-            <div style={{ marginTop: '10px' }}>
-              <RemoveSessionSignersButton
-                setWalletDelegated={setWalletDelegated}
-                setSessionSignerAdded={setSessionSignerAdded}
-              />
-            </div>
+            <RemoveSessionSignersButton
+              setWalletDelegated={setWalletDelegated}
+              setSessionSignerAdded={setSessionSignerAdded}
+              setResponse={setResponse}
+            />
           </div>
+
+          <button onClick={connectToMCP} style={{ marginTop: '10px' }}>
+            Connect to MCP Server
+          </button>
           
           <button onClick={sendSignRequest}>Send signPersonalMessage Request</button>
           <br />
@@ -202,9 +252,10 @@ function App() {
 }
 
 // Component to remove session signers
-function RemoveSessionSignersButton({ setWalletDelegated, setSessionSignerAdded }: {
+function RemoveSessionSignersButton({ setWalletDelegated, setSessionSignerAdded, setResponse }: {
   setWalletDelegated: (value: boolean) => void;
   setSessionSignerAdded: (value: boolean) => void;
+  setResponse: (message: string) => void;
 }) {
   const { user } = usePrivy();
   const { removeSessionSigners } = useSessionSigners();
@@ -221,14 +272,16 @@ function RemoveSessionSignersButton({ setWalletDelegated, setSessionSignerAdded 
   const onRevoke = async () => {
     if (!delegatedWallet) return;
     try {
+      setResponse('🔄 Revoking server access permission...');
       await removeSessionSigners({ address: delegatedWallet.address });
       // Update the state to reflect that the wallet is no longer delegated
       setWalletDelegated(false);
       setSessionSignerAdded(false);
-      alert('Session signer removed successfully');
+      console.log('Revoking server access for wallet:', delegatedWallet.address);
+      setResponse('✅ Server access permission revoked successfully');
     } catch (error) {
       console.error('Error removing session signer:', error);
-      alert(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      setResponse(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
