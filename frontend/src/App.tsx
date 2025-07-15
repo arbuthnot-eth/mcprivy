@@ -11,6 +11,7 @@ function App() {
   const [token, setToken] = useState('');
   const [sessionSignerAdded, setSessionSignerAdded] = useState(false);
   const [walletDelegated, setWalletDelegated] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
 
   // Get token when authenticated
   useEffect(() => {
@@ -29,8 +30,9 @@ function App() {
       const isDelegated = user?.linkedAccounts.some(
         (account) => account.type === 'wallet' && account.address === activeWallet.address && account.delegated
       );
-      setWalletDelegated(!!isDelegated);
-      setSessionSignerAdded(!!isDelegated);
+      if (isDelegated) {
+        connectToMCP();
+      }
     }
   }, [activeWallet, user]);
 
@@ -113,35 +115,54 @@ function App() {
   };
 
   const connectToMCP = async () => {
-    // First, grant server access if not already done
-    if (!sessionSignerAdded && !walletDelegated) {
-      const success = await grantServerAccess();
-      if (!success) {
-        return; // Exit if access couldn't be granted
+    if (!isConnected) {
+      const token = await getAccessToken();
+      // Updated URL to use /ws route
+      const url = import.meta.env.VITE_WORKER_WS_URL + `?token=${token}`;
+      const socket = new WebSocket(url);
+      socket.onopen = () => {
+        console.log('WS connected');
+        setResponse('✅ Connected to MCP Server');
+        setIsConnected(true);
+      };
+      socket.onmessage = (event) => {
+        setResponse(event.data);
+        console.log('Received:', event.data);
+      };
+      socket.onclose = () => {
+        console.log('WS closed');
+        setResponse('❌ Connection closed');
+        setIsConnected(false);
+      };
+      socket.onerror = (error) => {
+        console.error('WS error:', error);
+        setResponse('❌ Connection error');
+        setIsConnected(false);
+      };
+      setWs(socket);
+    }
+
+    if (activeWallet) {
+      // Check if the wallet is delegated or has session signers
+      const isDelegated = user?.linkedAccounts.some(
+        (account) => account.type === 'wallet' && account.address === activeWallet.address && account.delegated
+      );
+      if (!isDelegated) {
+            // First, grant server access if not already done
+        if (!sessionSignerAdded && !walletDelegated) {
+          const success = await grantServerAccess();
+          if (!success) {
+            return; // Exit if access couldn't be granted
+          }
+        }
+      }
+      else {
+        setWalletDelegated(!!isDelegated);
+        setSessionSignerAdded(!!isDelegated);
       }
     }
 
-    const token = await getAccessToken();
-    // Updated URL to use /ws route
-    const url = `wss://mcprivy-backend.imbibed.workers.dev/ws?token=${token}`;
-    const socket = new WebSocket(url);
-    socket.onopen = () => {
-      console.log('WS connected');
-      setResponse('✅ Connected to MCP Server');
-    };
-    socket.onmessage = (event) => {
-      setResponse(event.data);
-      console.log('Received:', event.data);
-    };
-    socket.onclose = () => {
-      console.log('WS closed');
-      setResponse('❌ Connection closed');
-    };
-    socket.onerror = (error) => {
-      console.error('WS error:', error);
-      setResponse('❌ Connection error');
-    };
-    setWs(socket);
+    
   };
 
   const sendSignRequest = async () => {
@@ -220,7 +241,7 @@ function App() {
           <p style={{ marginBottom: '10px' }}>Server Access Status: {sessionSignerAdded || walletDelegated ? '✅ Granted' : '❌ Not granted'}</p>
 
           <div style={{ marginTop: '10px', marginBottom: '10px' }}>
-            <button onClick={grantServerAccess} disabled={sessionSignerAdded || walletDelegated}>
+            <button onClick={connectToMCP} disabled={sessionSignerAdded || walletDelegated}>
               Grant Server Access Permission
             </button>
             <button onClick={revokeServerAccess} disabled={!sessionSignerAdded && !walletDelegated}>
@@ -228,10 +249,6 @@ function App() {
             </button>
           </div>
 
-          <button onClick={connectToMCP} style={{ marginTop: '10px' }}>
-            Connect to MCP Server
-          </button>
-          
           <button onClick={sendSignRequest}>Send signPersonalMessage Request</button>
           <br />
           <div style={{ marginTop: '10px', fontSize: '14px', color: '#666' }}>
