@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 function App() {
   const { ready, authenticated, login, logout, getAccessToken, user } = usePrivy();
   const { wallets } = useWallets();
-  const { addSessionSigners } = useSessionSigners();
+  const { addSessionSigners, removeSessionSigners } = useSessionSigners();
   const { delegateWallet } = useHeadlessDelegatedActions();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [response, setResponse] = useState('');
@@ -92,9 +92,6 @@ function App() {
 
   // Function to revoke server access (remove session signers)
   const revokeServerAccess = async () => {
-    const { user } = usePrivy();
-    const { removeSessionSigners } = useSessionSigners();
-
     const delegatedWallet = user?.linkedAccounts.find(
       (account) => account.type === 'wallet' && account.delegated
     ) as WalletWithMetadata | undefined;
@@ -226,11 +223,9 @@ function App() {
             <button onClick={grantServerAccess} disabled={sessionSignerAdded || walletDelegated}>
               Grant Server Access Permission
             </button>
-            <RemoveSessionSignersButton
-              setWalletDelegated={setWalletDelegated}
-              setSessionSignerAdded={setSessionSignerAdded}
-              setResponse={setResponse}
-            />
+            <button onClick={revokeServerAccess} disabled={!sessionSignerAdded && !walletDelegated}>
+              Revoke Server Access Permission
+            </button>
           </div>
 
           <button onClick={connectToMCP} style={{ marginTop: '10px' }}>
@@ -251,45 +246,5 @@ function App() {
   );
 }
 
-// Component to remove session signers
-function RemoveSessionSignersButton({ setWalletDelegated, setSessionSignerAdded, setResponse }: {
-  setWalletDelegated: (value: boolean) => void;
-  setSessionSignerAdded: (value: boolean) => void;
-  setResponse: (message: string) => void;
-}) {
-  const { user } = usePrivy();
-  const { removeSessionSigners } = useSessionSigners();
-
-  // Check if the user's wallets already have session signers
-  const hasDelegatedWallets = user?.linkedAccounts.some(
-    (account) => account.type === 'wallet' && account.delegated
-  );
-
-  const delegatedWallet = user?.linkedAccounts.find(
-    (account) => account.type === 'wallet' && account.delegated
-  ) as WalletWithMetadata | undefined;
-
-  const onRevoke = async () => {
-    if (!delegatedWallet) return;
-    try {
-      setResponse('🔄 Revoking server access permission...');
-      await removeSessionSigners({ address: delegatedWallet.address });
-      // Update the state to reflect that the wallet is no longer delegated
-      setWalletDelegated(false);
-      setSessionSignerAdded(false);
-      console.log('Revoking server access for wallet:', delegatedWallet.address);
-      setResponse('✅ Server access permission revoked successfully');
-    } catch (error) {
-      console.error('Error removing session signer:', error);
-      setResponse(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  return (
-    <button disabled={!hasDelegatedWallets} onClick={onRevoke}>
-      Revoke Server Access Permission
-    </button>
-  );
-}
 
 export default App;
