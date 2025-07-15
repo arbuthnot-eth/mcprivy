@@ -1,8 +1,8 @@
-import { usePrivy, useWallets, useSessionSigners, useHeadlessDelegatedActions } from '@privy-io/react-auth';
+import { usePrivy, useWallets, useSessionSigners, useHeadlessDelegatedActions, type WalletWithMetadata } from '@privy-io/react-auth';
 import { useState, useEffect } from 'react';
 
 function App() {
-  const { ready, authenticated, login, logout, getAccessToken } = usePrivy();
+  const { ready, authenticated, login, logout, getAccessToken, user } = usePrivy();
   const { wallets } = useWallets();
   const { addSessionSigners } = useSessionSigners();
   const { delegateWallet } = useHeadlessDelegatedActions();
@@ -25,13 +25,14 @@ function App() {
   // Check if wallet is already delegated or has session signer
   useEffect(() => {
     if (activeWallet) {
-      // For simplicity, check if it's delegated (expand as needed)
-      const isDelegated = activeWallet.address === '0xA835a93b72B1d3d5E1850cB68dB9B4CDad1dCc0A'; // Your hardcoded check; remove if not needed
-      setWalletDelegated(isDelegated);
-      
-      // TODO: Query Privy API or dashboard to check if quorum is already added as signer
+      // Check if the wallet is delegated or has session signers
+      const isDelegated = user?.linkedAccounts.some(
+        (account) => account.type === 'wallet' && account.address === activeWallet.address && account.delegated
+      );
+      setWalletDelegated(!!isDelegated);
+      setSessionSignerAdded(!!isDelegated);
     }
-  }, [activeWallet]);
+  }, [activeWallet, user]);
 
   // Add session signer (for embedded wallets) or delegate (for external/client-side)
   const grantServerAccess = async () => {
@@ -170,7 +171,7 @@ function App() {
           <p>Wallet Type: {activeWallet?.walletClientType || 'Unknown'}</p>
           <p>Token: {token}</p>
           <p>Server Access Status: {sessionSignerAdded || walletDelegated ? '✅ Granted' : '❌ Not granted'}</p>
-          
+
           <div style={{ marginTop: '10px', marginBottom: '10px' }}>
             <button onClick={grantServerAccess} disabled={sessionSignerAdded || walletDelegated}>
               Grant Server Access Permission
@@ -178,6 +179,12 @@ function App() {
             <button onClick={connectToMCP} style={{ marginLeft: '10px' }}>
               Connect to MCP Server
             </button>
+            <div style={{ marginTop: '10px' }}>
+              <RemoveSessionSignersButton
+                setWalletDelegated={setWalletDelegated}
+                setSessionSignerAdded={setSessionSignerAdded}
+              />
+            </div>
           </div>
           
           <button onClick={sendSignRequest}>Send signPersonalMessage Request</button>
@@ -191,6 +198,44 @@ function App() {
         </div>
       )}
     </div>
+  );
+}
+
+// Component to remove session signers
+function RemoveSessionSignersButton({ setWalletDelegated, setSessionSignerAdded }: {
+  setWalletDelegated: (value: boolean) => void;
+  setSessionSignerAdded: (value: boolean) => void;
+}) {
+  const { user } = usePrivy();
+  const { removeSessionSigners } = useSessionSigners();
+
+  // Check if the user's wallets already have session signers
+  const hasDelegatedWallets = user?.linkedAccounts.some(
+    (account) => account.type === 'wallet' && account.delegated
+  );
+
+  const delegatedWallet = user?.linkedAccounts.find(
+    (account) => account.type === 'wallet' && account.delegated
+  ) as WalletWithMetadata | undefined;
+
+  const onRevoke = async () => {
+    if (!delegatedWallet) return;
+    try {
+      await removeSessionSigners({ address: delegatedWallet.address });
+      // Update the state to reflect that the wallet is no longer delegated
+      setWalletDelegated(false);
+      setSessionSignerAdded(false);
+      alert('Session signer removed successfully');
+    } catch (error) {
+      console.error('Error removing session signer:', error);
+      alert(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  return (
+    <button disabled={!hasDelegatedWallets} onClick={onRevoke}>
+      Revoke Server Access Permission
+    </button>
   );
 }
 
