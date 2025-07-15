@@ -19,6 +19,7 @@
 		"@cloudflare/workers-types": "^4.20250712.0",
 		"@privy-io/server-auth": "^1.28.3",
 		"canonicalize": "^2.1.0",
-		"crypto": "^1.0.1"
+		"crypto": "^1.0.1",
+		"@privy-io/api": "latest"
 	}
 }
