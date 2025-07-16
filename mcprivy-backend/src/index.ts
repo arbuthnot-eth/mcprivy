@@ -13,21 +13,6 @@ interface WebSocketState {
 
 const wsState = new Map<WebSocket, WebSocketState>();
 
-// Helper to convert hex string to UTF-8 string
-function hexToBytes(hex: string): Uint8Array {
-  hex = hex.startsWith('0x') ? hex.slice(2) : hex;
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
-  }
-  return bytes;
-}
-
-function hexToString(hex: string): string {
-  const bytes = hexToBytes(hex);
-  return new TextDecoder('utf-8').decode(bytes);
-}
-
 // Helper to initialize Privy client with walletApi config for automatic signing
 function initPrivyClient(env: Env): PrivyClient {
   return new PrivyClient(env.PRIVY_APP_ID, env.PRIVY_APP_SECRET, {
@@ -277,14 +262,12 @@ export default {
           const { walletId } = state;
           
           if (msg.method === 'signPersonalMessage') {
-            const hexMessage = msg.params[0]; // Keep as hex (e.g., '0x48656c6c6f20776f726c64')
-            console.log('Received hex message:', hexMessage);
             console.log('Wallet ID:', walletId);
 
             try {
-              // Decode hex to plain text for signMessage
-              const messageText = hexToString(hexMessage);
-
+              // text for signMessage
+              const messageText = msg.params[0]
+              console.log(messageText);
               // Use SDK's walletApi.ethereum.signMessage
               const client = initPrivyClient(env);
               const signData = await client.walletApi.ethereum.signMessage({
