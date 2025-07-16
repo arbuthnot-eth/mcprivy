@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import { PrivyProvider } from '@privy-io/react-auth';
+import { Buffer } from 'buffer';
+
+// Configure the Buffer polyfill for global use
+window.Buffer = Buffer;
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
