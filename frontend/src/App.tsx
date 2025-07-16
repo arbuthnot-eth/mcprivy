@@ -118,7 +118,7 @@ function App() {
     if (!isConnected) {
       const token = await getAccessToken();
       // Updated URL to use /ws route
-      const url = import.meta.env.VITE_WORKER_WS_URL + `?token=${token}`;
+      const url = import.meta.env.VITE_WORKER_URL + `?token=${token}`;
       const socket = new WebSocket(url);
       socket.onopen = () => {
         console.log('WS connected');
