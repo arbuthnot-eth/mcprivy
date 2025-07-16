@@ -168,3 +168,5 @@ dist
 *.pem
 
 keys/
+
+cloudflare_agents.ts
