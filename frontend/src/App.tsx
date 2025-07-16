@@ -215,7 +215,7 @@ function App() {
           id: 1,
           jsonrpc: '2.0',
           method: 'signPersonalMessage',
-          params: ['0x48656c6c6f20776f726c64'], // Hex for "Hello world"
+          params: ['Hello, World!'],
         };
         ws.send(JSON.stringify(rpcRequest));
       }
